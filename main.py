@@ -38,7 +38,7 @@ AUDIO_FILES = {
 }
 
 # ----------------------------
-# JS AUTOPLAY INJECTOR (WORKING)
+# JS AUTOPLAY INJECTOR
 # ----------------------------
 def js_play_audio(file_path):
     """Injects JS to force-play an audio clip (bypasses browser autoplay blocking)."""
@@ -109,6 +109,17 @@ class PersonDetector(VideoProcessorBase):
 st.title("👥 People Counter")
 st.markdown("### Detects people and plays sound alerts intelligently")
 
+# --- Config Controls ---
+st.sidebar.header("⚙️ Detection Settings")
+stability_threshold = st.sidebar.slider("Stability Threshold (frames)", 1, 10, 5)
+cooldown = st.sidebar.slider("Audio Cooldown (seconds)", 0.5, 5.0, 1.0, step=0.1)
+
+st.sidebar.info(
+    "➡️ Higher *stability threshold* = fewer false audio changes.\n"
+    "➡️ Longer *cooldown* = less frequent replays."
+)
+
+# --- WebRTC setup ---
 ctx = webrtc_streamer(
     key="people-detection",
     mode=WebRtcMode.SENDRECV,
@@ -124,16 +135,15 @@ st.markdown("---")
 
 if ctx.video_processor:
     count_placeholder = st.empty()
+    stability_placeholder = st.empty()
     status_placeholder = st.empty()
 
-    # --- Stability control variables ---
-    stable_count = None               # Current stable count
-    candidate_count = None            # Candidate for new count
-    stability_counter = 0             # How many times we’ve seen candidate_count
-    stability_threshold = 5           # Require 5 confirmations before switching audio
+    # --- Stability variables ---
+    stable_count = None
+    candidate_count = None
+    stability_counter = 0
 
-    last_audio_time = 0               # Prevent spam
-    cooldown = 1.0                    # Minimum seconds between audio plays
+    last_audio_time = 0
 
     while ctx.state.playing:
         if hasattr(ctx.video_processor, 'person_count'):
@@ -147,7 +157,11 @@ if ctx.video_processor:
             else:
                 stability_counter += 1
 
-            # --- Only switch when stable for N frames ---
+            stability_placeholder.text(
+                f"Stability: {stability_counter}/{stability_threshold} (Target: {candidate_count})"
+            )
+
+            # --- Only trigger if stable ---
             if stability_counter >= stability_threshold and stable_count != candidate_count:
                 stable_count = candidate_count
                 stability_counter = 0
