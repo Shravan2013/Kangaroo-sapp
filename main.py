@@ -139,7 +139,7 @@ class PersonDetector(VideoProcessorBase):
 # ----------------------------
 # STREAMLIT UI
 # ----------------------------
-st.title("👥 People Counter")
+st.title(" ")
 st.markdown(" ")
 
 # Initialize session state
