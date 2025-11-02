@@ -38,39 +38,53 @@ AUDIO_FILES = {
 }
 
 # ----------------------------
-# JS AUTOPLAY INJECTOR
+# JS AUDIO CONTROL
 # ----------------------------
-def js_play_audio(file_path):
-    """Injects JS to force-play an audio clip (bypasses browser autoplay blocking)."""
+def js_play_audio(file_path=None, stop=False):
+    """Play or stop audio clip via JavaScript injection."""
     try:
-        with open(file_path, "rb") as f:
-            audio_bytes = f.read()
-        b64 = base64.b64encode(audio_bytes).decode()
-        unique = str(time.time()).replace(".", "")
-        js_code = f"""
-        <script>
-        (async () => {{
-            const existing = document.getElementById("audio_{unique}");
-            if (existing) existing.remove();
+        unique = "people_counter_audio"
 
-            const audio = document.createElement('audio');
-            audio.id = "audio_{unique}";
-            audio.src = "data:audio/mp3;base64,{b64}";
-            audio.autoplay = true;
-            audio.volume = 1.0;
-            document.body.appendChild(audio);
-            try {{
-                await audio.play();
-                console.log("Audio played ✅");
-            }} catch (e) {{
-                console.warn("Autoplay blocked ❌", e);
+        if stop:
+            # Stop and remove any currently playing audio
+            js_code = f"""
+            <script>
+            const audio = document.getElementById("{unique}");
+            if (audio) {{
+                audio.pause();
+                audio.currentTime = 0;
+                audio.remove();
+                console.log("Audio stopped ❌");
             }}
-        }})();
-        </script>
-        """
+            </script>
+            """
+        else:
+            with open(file_path, "rb") as f:
+                audio_bytes = f.read()
+            b64 = base64.b64encode(audio_bytes).decode()
+
+            # Create or update single persistent audio element
+            js_code = f"""
+            <script>
+            let audio = document.getElementById("{unique}");
+            if (!audio) {{
+                audio = document.createElement('audio');
+                audio.id = "{unique}";
+                audio.autoplay = true;
+                audio.volume = 1.0;
+                document.body.appendChild(audio);
+            }}
+            audio.src = "data:audio/mp3;base64,{b64}";
+            audio.play().then(() => {{
+                console.log("Playing new audio ✅");
+            }}).catch(e => {{
+                console.warn("Autoplay blocked ❌", e);
+            }});
+            </script>
+            """
         st.components.v1.html(js_code, height=0)
     except Exception as e:
-        st.error(f"❌ Error playing {file_path}: {e}")
+        st.error(f"❌ JS audio error: {e}")
 
 # ----------------------------
 # YOLO PERSON DETECTOR
@@ -133,21 +147,21 @@ if ctx.video_processor:
             
             count_placeholder.metric("People Detected", current_count)
             
-            if current_count != last_played_count and current_count > 0:
-                if current_count in AUDIO_FILES:
+            if current_count != last_played_count:
+                if current_count > 0 and current_count in AUDIO_FILES:
                     js_play_audio(AUDIO_FILES[current_count])
                     status_placeholder.success(
-                        f"🔊 Played audio for {current_count} "
+                        f"🔊 Playing audio for {current_count} "
                         f"{'person' if current_count == 1 else 'people'}"
                     )
+                else:
+                    js_play_audio(stop=True)
+                    status_placeholder.info("👀 Waiting for people...")
                 last_played_count = current_count
-            elif current_count == 0 and last_played_count != 0:
-                last_played_count = 0
-                status_placeholder.info("👀 Waiting for people...")
         
         time.sleep(0.3)
 else:
     st.info("👆 Click **START** to activate camera and audio")
 
 st.markdown("---")
-st.caption("Built with YOLOv8 + Streamlit + JS Audio Hack 💪")
+st.caption("Built with YOLOv8 + Streamlit + JavaScript Audio Control 💪")
