@@ -2,10 +2,10 @@
 
 
 
-![License](https://img.shields.io/github/license/Shravan2013/REPO?style=flat-square)
-![Stars](https://img.shields.io/github/stars/Shravan2013/REPO?style=flat-square)
-![Issues](https://img.shields.io/github/issues/Shravan2013/REPO?style=flat-square)
-![Pull Requests](https://img.shields.io/github/issues-pr/Shravan2013/REPO?style=flat-square)
+![License](https://img.shields.io/github/license/Shravan2013/Kangaroo-sapp.git?style=flat-square)
+![Stars](https://img.shields.io/github/stars/Shravan2013/Kangaroo-sapp.git?style=flat-square)
+![Issues](https://img.shields.io/github/issues/Shravan2013/Kangaroo-sapp.git?style=flat-square)
+![Pull Requests](https://img.shields.io/github/issues-pr/Shravan2013/Kangaroo-sapp.git?style=flat-square)
 
 ---
 
