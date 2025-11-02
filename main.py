@@ -43,33 +43,31 @@ AUDIO_FILES = {
 class AudioManager:
     def __init__(self):
         self.current_audio_id = None
+        self.is_playing = False
         
     def play_audio(self, file_path):
         """Injects JS to play audio and stops any currently playing audio"""
         try:
+            # Stop any currently playing audio first
+            self.stop_audio()
+            
             with open(file_path, "rb") as f:
                 audio_bytes = f.read()
             b64 = base64.b64encode(audio_bytes).decode()
             unique_id = str(time.time()).replace(".", "")
             
-            # Stop previous audio first
-            if self.current_audio_id:
-                stop_js = f"""
-                <script>
-                const prevAudio = document.getElementById("audio_{self.current_audio_id}");
-                if (prevAudio) {{
-                    prevAudio.pause();
-                    prevAudio.currentTime = 0;
-                    prevAudio.remove();
-                }}
-                </script>
-                """
-                st.components.v1.html(stop_js, height=0)
-            
             # Play new audio
             play_js = f"""
             <script>
             (async () => {{
+                // Stop any existing audio
+                const existingAudios = document.querySelectorAll('audio');
+                existingAudios.forEach(audio => {{
+                    audio.pause();
+                    audio.currentTime = 0;
+                    audio.remove();
+                }});
+                
                 const audio = document.createElement('audio');
                 audio.id = "audio_{unique_id}";
                 audio.src = "data:audio/mp3;base64,{b64}";
@@ -79,6 +77,14 @@ class AudioManager:
                 // Auto-remove when finished playing
                 audio.onended = function() {{
                     audio.remove();
+                    // Dispatch custom event when audio ends
+                    const event = new CustomEvent('audioEnded', {{ detail: {{ audioId: '{unique_id}' }} }});
+                    document.dispatchEvent(event);
+                }};
+                
+                audio.onplay = function() {{
+                    const event = new CustomEvent('audioStarted', {{ detail: {{ audioId: '{unique_id}' }} }});
+                    document.dispatchEvent(event);
                 }};
                 
                 document.body.appendChild(audio);
@@ -94,9 +100,26 @@ class AudioManager:
             """
             st.components.v1.html(play_js, height=0)
             self.current_audio_id = unique_id
+            self.is_playing = True
             
         except Exception as e:
             st.error(f"❌ Error playing {file_path}: {e}")
+    
+    def stop_audio(self):
+        """Stop all audio elements"""
+        stop_js = """
+        <script>
+        const audios = document.querySelectorAll('audio');
+        audios.forEach(audio => {
+            audio.pause();
+            audio.currentTime = 0;
+            audio.remove();
+        });
+        </script>
+        """
+        st.components.v1.html(stop_js, height=0)
+        self.is_playing = False
+        self.current_audio_id = None
 
 # Initialize audio manager
 audio_manager = AudioManager()
@@ -108,10 +131,9 @@ class PersonDetector(VideoProcessorBase):
     def __init__(self):
         self.person_count = 0
         self.frame_count = 0
-        self.detection_history = deque(maxlen=5)  # Increased for better stability
-        self.last_played_count = 0
-        self.last_play_time = 0
-        self.play_cooldown = 2.0  # Minimum seconds between audio plays
+        self.detection_history = deque(maxlen=5)  # For stability
+        self.last_reported_count = 0  # Track what we last reported
+        self.audio_cooldown = 0  # Cooldown counter
         
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
@@ -136,8 +158,23 @@ class PersonDetector(VideoProcessorBase):
             self.detection_history.append(count)
             if self.detection_history:
                 self.person_count = int(np.median(self.detection_history))
+            
+            # Decrease cooldown if active
+            if self.audio_cooldown > 0:
+                self.audio_cooldown -= 1
         
         return av.VideoFrame.from_ndarray(img, format="bgr24")
+    
+    def should_play_audio(self, current_count):
+        """Determine if we should play audio for this count change"""
+        # Only play if count actually changed AND we're not in cooldown
+        if (current_count != self.last_reported_count and 
+            current_count > 0 and 
+            self.audio_cooldown == 0):
+            self.last_reported_count = current_count
+            self.audio_cooldown = 10  # Set cooldown (about 3-4 seconds)
+            return True
+        return False
 
 # ----------------------------
 # STREAMLIT UI
@@ -185,16 +222,10 @@ if ctx.video_processor:
             # Update display
             count_placeholder.metric("People Detected", current_count)
             
-            # Check if count changed and cooldown period passed
-            current_time = time.time()
-            should_play_audio = (
-                current_count != last_played_count and 
-                current_count > 0 and
-                st.session_state.audio_enabled and
-                (current_time - ctx.video_processor.last_play_time) > ctx.video_processor.play_cooldown
-            )
+            # Check if we should play audio
+            should_play = ctx.video_processor.should_play_audio(current_count)
             
-            if should_play_audio:
+            if should_play and st.session_state.audio_enabled:
                 if current_count in AUDIO_FILES:
                     try:
                         audio_manager.play_audio(AUDIO_FILES[current_count])
@@ -202,7 +233,6 @@ if ctx.video_processor:
                             f"🔊 Played audio for {current_count} "
                             f"{'person' if current_count == 1 else 'people'}"
                         )
-                        ctx.video_processor.last_play_time = current_time
                         last_played_count = current_count
                         st.session_state.last_displayed_count = current_count
                     except Exception as e:
