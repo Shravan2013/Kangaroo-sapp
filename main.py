@@ -11,12 +11,12 @@ import time
 import base64
 
 # ----------------------------
-# 🔧 PAGE CONFIG
+# PAGE CONFIG
 # ----------------------------
 st.set_page_config(page_title="People Counter", layout="centered")
 
 # ----------------------------
-# 🔍 LOAD YOLO MODEL
+# LOAD YOLO MODEL
 # ----------------------------
 @st.cache_resource
 def load_model():
@@ -27,7 +27,7 @@ def load_model():
 model = load_model()
 
 # ----------------------------
-# 🔊 AUDIO FILES
+# AUDIO FILES
 # ----------------------------
 AUDIO_FILES = {
     1: "1_person.mp3",
@@ -38,27 +38,42 @@ AUDIO_FILES = {
 }
 
 # ----------------------------
-# 🎵 PLAY AUDIO (SAFE HTML VERSION)
+# JS AUTOPLAY INJECTOR
 # ----------------------------
-def play_audio(file_path):
-    """Play audio using inline HTML to avoid Streamlit caching or UI issues."""
+def js_play_audio(file_path):
+    """Injects JS to force-play an audio clip (bypasses browser autoplay blocking)."""
     try:
         with open(file_path, "rb") as f:
             audio_bytes = f.read()
         b64 = base64.b64encode(audio_bytes).decode()
         unique = str(time.time()).replace(".", "")
-        audio_html = f"""
-        <audio id="player_{unique}" autoplay>
-            <source src="data:audio/mp3;base64,{b64}?v={unique}" type="audio/mp3">
-        </audio>
+        js_code = f"""
+        <script>
+        (async () => {{
+            const existing = document.getElementById("audio_{unique}");
+            if (existing) existing.remove();
+
+            const audio = document.createElement('audio');
+            audio.id = "audio_{unique}";
+            audio.src = "data:audio/mp3;base64,{b64}";
+            audio.autoplay = true;
+            audio.volume = 1.0;
+            document.body.appendChild(audio);
+            try {{
+                await audio.play();
+                console.log("Audio played ✅");
+            }} catch (e) {{
+                console.warn("Autoplay blocked ❌", e);
+            }}
+        }})();
+        </script>
         """
-        # Inject small HTML audio player invisibly under Streamlit widgets
-        st.markdown(audio_html, unsafe_allow_html=True)
+        st.components.v1.html(js_code, height=0)
     except Exception as e:
         st.error(f"❌ Error playing {file_path}: {e}")
 
 # ----------------------------
-# 🧠 VIDEO PROCESSOR
+# YOLO PERSON DETECTOR
 # ----------------------------
 class PersonDetector(VideoProcessorBase):
     def __init__(self):
@@ -70,7 +85,6 @@ class PersonDetector(VideoProcessorBase):
         img = frame.to_ndarray(format="bgr24")
         self.frame_count += 1
         
-        # Run detection every 2nd frame for performance
         if self.frame_count % 2 == 0:
             results = model(
                 img,
@@ -80,7 +94,6 @@ class PersonDetector(VideoProcessorBase):
                 device='cpu'
             )
             
-            # Count 'person' class (class 0)
             count = sum(int(box.cls[0]) == 0 for box in results[0].boxes)
             count = min(count, 5)
             
@@ -91,12 +104,11 @@ class PersonDetector(VideoProcessorBase):
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # ----------------------------
-# 🖥️ STREAMLIT UI
+# STREAMLIT UI
 # ----------------------------
 st.title("👥 People Counter")
-st.markdown("### Detects people in camera feed and plays sound alerts")
+st.markdown("### Detects people and plays sound alerts instantly")
 
-# WebRTC video (hidden feed)
 ctx = webrtc_streamer(
     key="people-detection",
     mode=WebRtcMode.SENDRECV,
@@ -110,9 +122,6 @@ ctx = webrtc_streamer(
 
 st.markdown("---")
 
-# ----------------------------
-# ⚙️ MAIN LOOP
-# ----------------------------
 if ctx.video_processor:
     count_placeholder = st.empty()
     status_placeholder = st.empty()
@@ -122,15 +131,13 @@ if ctx.video_processor:
         if hasattr(ctx.video_processor, 'person_count'):
             current_count = ctx.video_processor.person_count
             
-            # Show metric
             count_placeholder.metric("People Detected", current_count)
             
-            # Play new audio when count changes
             if current_count != last_played_count and current_count > 0:
                 if current_count in AUDIO_FILES:
-                    play_audio(AUDIO_FILES[current_count])
+                    js_play_audio(AUDIO_FILES[current_count])
                     status_placeholder.success(
-                        f"🔊 Playing audio for {current_count} "
+                        f"🔊 Played audio for {current_count} "
                         f"{'person' if current_count == 1 else 'people'}"
                     )
                 last_played_count = current_count
@@ -140,13 +147,7 @@ if ctx.video_processor:
         
         time.sleep(0.3)
 else:
-    st.info("👆 Click **START** to begin detection")
-    st.markdown("""
-    **How it works:**
-    - Uses your webcam (not displayed)
-    - Detects how many people appear
-    - Plays audio when count changes
-    """)
+    st.info("👆 Click **START** to activate camera and audio")
 
 st.markdown("---")
-st.caption("*Powered by YOLOv8 and Streamlit WebRTC*")
+st.caption("Built with YOLOv8 + Streamlit + JS Audio Hack 💪")
