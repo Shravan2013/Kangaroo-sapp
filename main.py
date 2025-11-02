@@ -10,8 +10,14 @@ from collections import deque
 import time
 import base64
 
+# ----------------------------
+# PAGE CONFIG
+# ----------------------------
 st.set_page_config(page_title="People Counter", layout="centered")
 
+# ----------------------------
+# LOAD YOLO MODEL
+# ----------------------------
 @st.cache_resource
 def load_model():
     model = YOLO("yolov8n.pt")
@@ -20,6 +26,9 @@ def load_model():
 
 model = load_model()
 
+# ----------------------------
+# AUDIO FILES
+# ----------------------------
 AUDIO_FILES = {
     1: "1_person.mp3",
     2: "2_people.mp3",
@@ -28,82 +37,135 @@ AUDIO_FILES = {
     5: "5_people.mp3"
 }
 
-# -----------------------------------------------------------------
-# 🔊 Inject global JS controller ONCE at page load
-# -----------------------------------------------------------------
-st.markdown("""
-<script>
-window.peopleAudio = new Audio();
-window.peopleAudio.volume = 1.0;
-window.playPeopleAudio = function(base64data) {
-    try {
-        window.peopleAudio.pause();
-        window.peopleAudio.src = "data:audio/mp3;base64," + base64data;
-        window.peopleAudio.currentTime = 0;
-        window.peopleAudio.play().catch(e => console.warn("Autoplay blocked", e));
-    } catch(e) { console.error("Play error", e); }
-};
-window.stopPeopleAudio = function() {
-    try {
-        window.peopleAudio.pause();
-        window.peopleAudio.currentTime = 0;
-    } catch(e) { console.error("Stop error", e); }
-};
-</script>
-""", unsafe_allow_html=True)
+# ----------------------------
+# JS AUDIO MANAGER
+# ----------------------------
+class AudioManager:
+    def __init__(self):
+        self.current_audio_id = None
+        
+    def play_audio(self, file_path):
+        """Injects JS to play audio and stops any currently playing audio"""
+        try:
+            with open(file_path, "rb") as f:
+                audio_bytes = f.read()
+            b64 = base64.b64encode(audio_bytes).decode()
+            unique_id = str(time.time()).replace(".", "")
+            
+            # Stop previous audio first
+            if self.current_audio_id:
+                stop_js = f"""
+                <script>
+                const prevAudio = document.getElementById("audio_{self.current_audio_id}");
+                if (prevAudio) {{
+                    prevAudio.pause();
+                    prevAudio.currentTime = 0;
+                    prevAudio.remove();
+                }}
+                </script>
+                """
+                st.components.v1.html(stop_js, height=0)
+            
+            # Play new audio
+            play_js = f"""
+            <script>
+            (async () => {{
+                const audio = document.createElement('audio');
+                audio.id = "audio_{unique_id}";
+                audio.src = "data:audio/mp3;base64,{b64}";
+                audio.autoplay = true;
+                audio.volume = 1.0;
+                
+                // Auto-remove when finished playing
+                audio.onended = function() {{
+                    audio.remove();
+                }};
+                
+                document.body.appendChild(audio);
+                try {{
+                    await audio.play();
+                    console.log("Audio played ✅");
+                }} catch (e) {{
+                    console.warn("Autoplay blocked ❌", e);
+                    audio.remove();
+                }}
+            }})();
+            </script>
+            """
+            st.components.v1.html(play_js, height=0)
+            self.current_audio_id = unique_id
+            
+        except Exception as e:
+            st.error(f"❌ Error playing {file_path}: {e}")
 
-# -----------------------------------------------------------------
-# Helper to call the JS functions
-# -----------------------------------------------------------------
-def play_audio(file_path):
-    """Convert audio to base64 and trigger playback via JS."""
-    try:
-        with open(file_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode()
-        js = f"<script>window.playPeopleAudio('{b64}');</script>"
-        st.components.v1.html(js, height=0)
-    except Exception as e:
-        st.error(f"❌ Play error: {e}")
+# Initialize audio manager
+audio_manager = AudioManager()
 
-def stop_audio():
-    """Stops the global audio."""
-    st.components.v1.html("<script>window.stopPeopleAudio();</script>", height=0)
-
-# -----------------------------------------------------------------
-# YOLO detector
-# -----------------------------------------------------------------
+# ----------------------------
+# YOLO PERSON DETECTOR
+# ----------------------------
 class PersonDetector(VideoProcessorBase):
     def __init__(self):
         self.person_count = 0
         self.frame_count = 0
-        self.detection_history = deque(maxlen=3)
+        self.detection_history = deque(maxlen=5)  # Increased for better stability
+        self.last_played_count = 0
+        self.last_play_time = 0
+        self.play_cooldown = 2.0  # Minimum seconds between audio plays
+        
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         self.frame_count += 1
+        
+        # Process every 2nd frame for performance
         if self.frame_count % 2 == 0:
-            results = model(img, verbose=False, imgsz=640, conf=0.4, device="cpu")
-            count = sum(int(box.cls[0]) == 0 for box in results[0].boxes)
+            results = model(
+                img,
+                verbose=False,
+                imgsz=640,
+                conf=0.4,
+                device='cpu'
+            )
+            
+            # Count people (class 0 in COCO dataset)
+            count = 0
+            if results[0].boxes is not None:
+                count = sum(int(box.cls[0]) == 0 for box in results[0].boxes)
             count = min(count, 5)
+            
             self.detection_history.append(count)
             if self.detection_history:
                 self.person_count = int(np.median(self.detection_history))
+        
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
-# -----------------------------------------------------------------
-# Streamlit UI
-# -----------------------------------------------------------------
+# ----------------------------
+# STREAMLIT UI
+# ----------------------------
 st.title("👥 People Counter")
-st.markdown("### Detects people and auto-plays corresponding sounds")
+st.markdown("### Detects people and plays sound alerts instantly")
 
-st.sidebar.header("⚙️ Detection Settings")
-stability_threshold = st.sidebar.slider("Stability Threshold", 1, 10, 5)
-cooldown = st.sidebar.slider("Cooldown (seconds)", 0.5, 5.0, 1.0, step=0.1)
+# Initialize session state for persistence
+if 'last_displayed_count' not in st.session_state:
+    st.session_state.last_displayed_count = 0
+if 'audio_enabled' not in st.session_state:
+    st.session_state.audio_enabled = True
+
+# Audio toggle
+st.session_state.audio_enabled = st.checkbox(
+    "Enable Audio Alerts", 
+    value=st.session_state.audio_enabled,
+    help="Play sound when people count changes"
+)
 
 ctx = webrtc_streamer(
     key="people-detection",
     mode=WebRtcMode.SENDRECV,
     video_processor_factory=PersonDetector,
-    media_stream_constraints={"video": True, "audio": False},
+    media_stream_constraints={
+        "video": {"width": {"ideal": 640}, "height": {"ideal": 480}},
+        "audio": False
+    },
     async_processing=True,
 )
 
@@ -112,42 +174,49 @@ st.markdown("---")
 if ctx.video_processor:
     count_placeholder = st.empty()
     status_placeholder = st.empty()
-
-    stable_count = None
-    candidate_count = None
-    stability_counter = 0
-    last_audio_time = 0
-
+    
+    # Use session state to persist across reruns
+    last_played_count = st.session_state.last_displayed_count
+    
     while ctx.state.playing:
-        if hasattr(ctx.video_processor, "person_count"):
+        if hasattr(ctx.video_processor, 'person_count'):
             current_count = ctx.video_processor.person_count
+            
+            # Update display
             count_placeholder.metric("People Detected", current_count)
-
-            # stabilization
-            if candidate_count != current_count:
-                candidate_count = current_count
-                stability_counter = 1
-            else:
-                stability_counter += 1
-
-            if stability_counter >= stability_threshold and stable_count != candidate_count:
-                stable_count = candidate_count
-                stability_counter = 0
-                now = time.time()
-
-                if now - last_audio_time >= cooldown:
-                    last_audio_time = now
-                    if stable_count > 0 and stable_count in AUDIO_FILES:
-                        play_audio(AUDIO_FILES[stable_count])
+            
+            # Check if count changed and cooldown period passed
+            current_time = time.time()
+            should_play_audio = (
+                current_count != last_played_count and 
+                current_count > 0 and
+                st.session_state.audio_enabled and
+                (current_time - ctx.video_processor.last_play_time) > ctx.video_processor.play_cooldown
+            )
+            
+            if should_play_audio:
+                if current_count in AUDIO_FILES:
+                    try:
+                        audio_manager.play_audio(AUDIO_FILES[current_count])
                         status_placeholder.success(
-                            f"🔊 {stable_count} {'person' if stable_count == 1 else 'people'} detected"
+                            f"🔊 Played audio for {current_count} "
+                            f"{'person' if current_count == 1 else 'people'}"
                         )
-                    else:
-                        stop_audio()
-                        status_placeholder.info("👀 No people detected")
+                        ctx.video_processor.last_play_time = current_time
+                        last_played_count = current_count
+                        st.session_state.last_displayed_count = current_count
+                    except Exception as e:
+                        status_placeholder.error(f"❌ Audio error: {e}")
+            elif current_count == 0 and last_played_count != 0:
+                last_played_count = 0
+                st.session_state.last_displayed_count = 0
+                status_placeholder.info("👀 Waiting for people...")
+            elif current_count == last_played_count and current_count > 0:
+                status_placeholder.info(f"✅ Tracking {current_count} {'person' if current_count == 1 else 'people'}")
+        
         time.sleep(0.3)
 else:
-    st.info("👆 Click **START** to activate camera")
+    st.info("👆 Click **START** to activate camera and audio")
 
 st.markdown("---")
-st.caption("💡 Stable autoplay + stop audio fixed version")
+st.caption("Built with YOLOv8 + Streamlit + JS Audio Hack 💪")
