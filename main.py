@@ -38,53 +38,50 @@ AUDIO_FILES = {
 }
 
 # ----------------------------
-# JS AUDIO CONTROL
+# HTML AUDIO CONTROLLER (persistent)
 # ----------------------------
-def js_play_audio(file_path=None, stop=False):
-    """Play or stop audio clip via JavaScript injection."""
-    try:
-        unique = "people_counter_audio"
+def audio_controller():
+    """Injects persistent JS controller once."""
+    js_code = """
+    <script>
+    window.peopleAudio = window.peopleAudio || {
+        el: null,
+        currentSrc: null,
+        playAudio(b64data) {
+            if (!this.el) {
+                this.el = document.createElement('audio');
+                this.el.id = 'people_audio';
+                this.el.autoplay = true;
+                this.el.volume = 1.0;
+                document.body.appendChild(this.el);
+            }
+            this.el.src = "data:audio/mp3;base64," + b64data;
+            this.el.play().catch(e => console.warn("Autoplay blocked:", e));
+            this.currentSrc = b64data;
+        },
+        stopAudio() {
+            if (this.el) {
+                this.el.pause();
+                this.el.currentTime = 0;
+                this.el.src = "";
+                console.log("Audio stopped");
+            }
+        }
+    };
+    </script>
+    """
+    st.components.v1.html(js_code, height=0)
 
-        if stop:
-            # Stop and remove any currently playing audio
-            js_code = f"""
-            <script>
-            const audio = document.getElementById("{unique}");
-            if (audio) {{
-                audio.pause();
-                audio.currentTime = 0;
-                audio.remove();
-                console.log("Audio stopped ❌");
-            }}
-            </script>
-            """
-        else:
-            with open(file_path, "rb") as f:
-                audio_bytes = f.read()
-            b64 = base64.b64encode(audio_bytes).decode()
+def play_audio(file_path):
+    """Use existing JS audio controller to play sound."""
+    with open(file_path, "rb") as f:
+        audio_bytes = f.read()
+    b64 = base64.b64encode(audio_bytes).decode()
+    st.components.v1.html(f"<script>window.peopleAudio.playAudio('{b64}');</script>", height=0)
 
-            # Create or update single persistent audio element
-            js_code = f"""
-            <script>
-            let audio = document.getElementById("{unique}");
-            if (!audio) {{
-                audio = document.createElement('audio');
-                audio.id = "{unique}";
-                audio.autoplay = true;
-                audio.volume = 1.0;
-                document.body.appendChild(audio);
-            }}
-            audio.src = "data:audio/mp3;base64,{b64}";
-            audio.play().then(() => {{
-                console.log("Playing new audio ✅");
-            }}).catch(e => {{
-                console.warn("Autoplay blocked ❌", e);
-            }});
-            </script>
-            """
-        st.components.v1.html(js_code, height=0)
-    except Exception as e:
-        st.error(f"❌ JS audio error: {e}")
+def stop_audio():
+    """Stop currently playing sound."""
+    st.components.v1.html("<script>window.peopleAudio.stopAudio();</script>", height=0)
 
 # ----------------------------
 # YOLO PERSON DETECTOR
@@ -123,6 +120,9 @@ class PersonDetector(VideoProcessorBase):
 st.title("👥 People Counter")
 st.markdown("### Detects people and plays sound alerts instantly")
 
+# Load audio controller JS once
+audio_controller()
+
 ctx = webrtc_streamer(
     key="people-detection",
     mode=WebRtcMode.SENDRECV,
@@ -149,13 +149,13 @@ if ctx.video_processor:
             
             if current_count != last_played_count:
                 if current_count > 0 and current_count in AUDIO_FILES:
-                    js_play_audio(AUDIO_FILES[current_count])
+                    play_audio(AUDIO_FILES[current_count])
                     status_placeholder.success(
                         f"🔊 Playing audio for {current_count} "
                         f"{'person' if current_count == 1 else 'people'}"
                     )
                 else:
-                    js_play_audio(stop=True)
+                    stop_audio()
                     status_placeholder.info("👀 Waiting for people...")
                 last_played_count = current_count
         
@@ -164,4 +164,4 @@ else:
     st.info("👆 Click **START** to activate camera and audio")
 
 st.markdown("---")
-st.caption("Built with YOLOv8 + Streamlit + JavaScript Audio Control 💪")
+st.caption("Built with YOLOv8 + Streamlit + Persistent JS Audio 🎧")
