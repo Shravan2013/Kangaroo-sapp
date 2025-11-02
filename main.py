@@ -201,8 +201,8 @@ if ctx.video_processor:
                 status_placeholder.info(f"✅ Tracking {current_count} {'person' if current_count == 1 else 'people'}")
         
         time.sleep(0.3)
-else:
-    st.info("👆 Click **START** to activate camera and audio")
+
+    
 
 st.markdown("---")
 st.caption(" ")
