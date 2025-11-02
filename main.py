@@ -12,7 +12,7 @@ import time
 # Page config
 st.set_page_config(page_title="People Counter", layout="centered")
 
-# Initialize model
+# Initialize YOLO model
 @st.cache_resource
 def load_model():
     model = YOLO("yolov8n.pt")
@@ -30,47 +30,60 @@ AUDIO_FILES = {
     5: "5_people.mp3"
 }
 
+# Helper function to safely play audio
+def play_audio(file_path, placeholder, key_prefix="audio"):
+    """Play an audio file using a unique Streamlit key each time."""
+    try:
+        with open(file_path, 'rb') as f:
+            audio_bytes = f.read()
+        placeholder.audio(
+            audio_bytes,
+            format='audio/mp3',
+            autoplay=True,
+            key=f"{key_prefix}_{time.time()}"
+        )
+    except Exception as e:
+        st.error(f"❌ Error playing {file_path}: {e}")
+
+# Video processor class
 class PersonDetector(VideoProcessorBase):
     def __init__(self):
         self.person_count = 0
         self.frame_count = 0
-        self.detection_history = deque(maxlen=3)  # Shorter history for faster response
+        self.detection_history = deque(maxlen=3)  # Smooth short-term variation
         
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         self.frame_count += 1
         
-        # Process every 2nd frame for faster detection
+        # Process every 2nd frame for faster inference
         if self.frame_count % 2 == 0:
-            # Run YOLO detection
-            results = model(img, 
-                          verbose=False, 
-                          imgsz=640,
-                          conf=0.4,
-                          device='cpu')
+            results = model(
+                img,
+                verbose=False,
+                imgsz=640,
+                conf=0.4,
+                device='cpu'
+            )
             
+            # Count "person" detections
             count = 0
-            
-            # Count person class (class 0)
             for box in results[0].boxes:
-                if int(box.cls[0]) == 0:
+                if int(box.cls[0]) == 0:  # class 0 = person
                     count += 1
             
             count = min(count, 5)
             self.detection_history.append(count)
-            
-            # Smooth detection with median
             if len(self.detection_history) > 0:
                 self.person_count = int(np.median(self.detection_history))
         
-        # Return frame as-is (no drawing)
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 # Streamlit UI
 st.title("👥 People Counter")
 st.markdown("### Background detection with audio alerts")
 
-# WebRTC streamer (hidden video)
+# WebRTC streamer (video capture, no display)
 ctx = webrtc_streamer(
     key="people-detection",
     mode=WebRtcMode.SENDRECV,
@@ -87,7 +100,7 @@ ctx = webrtc_streamer(
 
 st.markdown("---")
 
-# Status display
+# Status area
 if ctx.video_processor:
     count_placeholder = st.empty()
     audio_placeholder = st.empty()
@@ -95,48 +108,42 @@ if ctx.video_processor:
     
     last_played_count = 0
     
-    # Update display
+    # Live update loop
     while ctx.state.playing:
         if hasattr(ctx.video_processor, 'person_count'):
             current_count = ctx.video_processor.person_count
             
-            # Display count
+            # Display the live count
             count_placeholder.metric(
-                label="People Detected", 
-                value=current_count,
-                delta=None
+                label="People Detected",
+                value=current_count
             )
             
-            # Play audio when count changes (non-blocking)
+            # Handle audio playback logic
             if current_count != last_played_count and current_count > 0:
                 if current_count in AUDIO_FILES:
                     audio_file = AUDIO_FILES[current_count]
-                    try:
-                        # Clear previous audio first
-                        audio_placeholder.empty()
-                        # Play new audio with unique key
-                        with open(audio_file, 'rb') as f:
-                            audio_bytes = f.read()
-                        audio_placeholder.audio(audio_bytes, format='audio/mp3', autoplay=True)
-                        last_played_count = current_count
-                        status_placeholder.success(f"🔊 Playing audio for {current_count} {'person' if current_count == 1 else 'people'}")
-                    except Exception as e:
-                        status_placeholder.error(f"❌ Audio file {audio_file} not found: {e}")
+                    audio_placeholder.empty()
+                    play_audio(audio_file, audio_placeholder)
+                    last_played_count = current_count
+                    status_placeholder.success(
+                        f"🔊 Playing audio for {current_count} "
+                        f"{'person' if current_count == 1 else 'people'}"
+                    )
             elif current_count == 0 and last_played_count != 0:
                 last_played_count = 0
                 audio_placeholder.empty()
                 status_placeholder.info("👀 Waiting for people...")
         
-        time.sleep(0.3)  # Faster polling
+        time.sleep(0.3)
 else:
     st.info("👆 Click **START** to begin detection")
     st.markdown("""
     **How it works:**
-    - Camera runs in background
-    - Detects people automatically
-    - Plays audio when count changes
-    - No video display needed
+    - Uses your device camera (no video shown)
+    - Detects how many people are visible
+    - Plays audio alert when count changes
     """)
 
 st.markdown("---")
-st.caption("*Powered by YOLOv8*")
+st.caption("*Powered by YOLOv8 and Streamlit WebRTC*")
